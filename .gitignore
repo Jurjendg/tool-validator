@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Local data and generated outputs
+xml-files/
+out/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+xmlConverter/tests/fixtures/xml_batch/
+xmlConverter/tests/fixtures/*.xml
+!xmlConverter/tests/fixtures/sample_monitorbestand.xml
+
+# Local/legacy tools not needed by the validator repo
+adviestool/
+labelReader/
+labels/
+
+# Secrets and local config
+.env
+.env.*
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/

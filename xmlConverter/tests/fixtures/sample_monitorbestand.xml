@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Monitorbestand>
+  <Building>
+    <BagId>1234567890123456</BagId>
+    <LabelClass>A</LabelClass>
+    <BuildYear>2010</BuildYear>
+    <UsableArea>98.2</UsableArea>
+  </Building>
+</Monitorbestand>
