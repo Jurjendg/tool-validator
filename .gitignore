@@ -9,8 +9,10 @@ venv/
 
 # Local data and generated outputs
 xml-files/
-out/
+out/*
+!out/toolvalidator.sqlite
 *.sqlite
+!out/toolvalidator.sqlite
 *.sqlite-shm
 *.sqlite-wal
 *.db
