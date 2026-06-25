@@ -177,6 +177,30 @@ def _extract_koelsystemen(root: etree._Element) -> list[dict[str, Any]]:
     return output
 
 
+def _extract_gebruiksfuncties(root: etree._Element) -> list[dict[str, Any]]:
+    rekenzones = _nodes_at(
+        root,
+        (
+            "EPSurvey/SurveySourceData/Energieprestatie/Gebouw/Invoer/"
+            "Rekenzones/Rekenzone"
+        ),
+    )
+
+    output: list[dict[str, Any]] = []
+    for rekenzone_idx, rekenzone in enumerate(rekenzones, start=1):
+        functies = _nodes_at(rekenzone, "Gebruiksfuncties/Gebruiksfunctie")
+        for functie_idx, functie in enumerate(functies, start=1):
+            output.append(
+                {
+                    "rekenzone_idx": rekenzone_idx,
+                    "functie_idx": functie_idx,
+                    "rekenzone_omschrijving": _text_at(rekenzone, "Omschrijving"),
+                    "type": functie.get("type"),
+                }
+            )
+    return output
+
+
 def _extract_constructiedelen(
     root: etree._Element,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -258,6 +282,7 @@ def extract_required_fields(tree: etree._ElementTree) -> RawMonitorbestandFields
     ventilatie_systemen = _extract_ventilatie_systemen(root)
     zonne_energie_systemen = _extract_zonne_energie_systemen(root)
     koelsystemen = _extract_koelsystemen(root)
+    gebruiksfuncties = _extract_gebruiksfuncties(root)
     constructiedelen, raam_constructiedelen, dak_constructiedelen = _extract_constructiedelen(root)
 
     return RawMonitorbestandFields(
@@ -372,6 +397,7 @@ def extract_required_fields(tree: etree._ElementTree) -> RawMonitorbestandFields
         ventilatie_systemen=ventilatie_systemen,
         zonne_energie_systemen=zonne_energie_systemen,
         koelsystemen=koelsystemen,
+        gebruiksfuncties=gebruiksfuncties,
         constructiedelen=constructiedelen,
         raam_constructiedelen=raam_constructiedelen,
         dak_constructiedelen=dak_constructiedelen,

@@ -37,6 +37,7 @@ class RawMonitorbestandFields:
     ventilatie_systemen: list[dict[str, Any]] = field(default_factory=list)
     zonne_energie_systemen: list[dict[str, Any]] = field(default_factory=list)
     koelsystemen: list[dict[str, Any]] = field(default_factory=list)
+    gebruiksfuncties: list[dict[str, Any]] = field(default_factory=list)
     constructiedelen: list[dict[str, Any]] = field(default_factory=list)
     raam_constructiedelen: list[dict[str, Any]] = field(default_factory=list)
     dak_constructiedelen: list[dict[str, Any]] = field(default_factory=list)

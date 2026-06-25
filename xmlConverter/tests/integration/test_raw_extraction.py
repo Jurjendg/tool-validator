@@ -20,6 +20,20 @@ def test_extract_required_fields_from_real_monitorbestand() -> None:
     assert fields.gebruiksoppervlakte == "138.94"
     assert fields.labelklasse == "C"
     assert fields.indicator_primaire_fossiele_energie == "192.83"
+    assert fields.gebruiksfuncties == [
+        {
+            "rekenzone_idx": 1,
+            "functie_idx": 1,
+            "rekenzone_omschrijving": "Rekenzone 511305724",
+            "type": "Woning",
+        },
+        {
+            "rekenzone_idx": 2,
+            "functie_idx": 1,
+            "rekenzone_omschrijving": "Rekenzone 1224054303",
+            "type": "Woning",
+        },
+    ]
     assert fields.rc_gevels is not None
     assert len(fields.opwekkers) > 0
     assert len(fields.tapwater_systemen) > 0
