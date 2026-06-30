@@ -274,12 +274,22 @@ class ValidatorDatabase:
                 PRIMARY KEY (run_id, category, detail)
             );
 
+            CREATE TABLE IF NOT EXISTS quarantine_cases (
+                xml_file_id INTEGER NOT NULL REFERENCES xml_files(id) ON DELETE CASCADE,
+                category TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                raw_json TEXT NOT NULL,
+                PRIMARY KEY (xml_file_id, category, detail)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_xml_files_run_status ON xml_files(run_id, status);
             CREATE INDEX IF NOT EXISTS idx_comparisons_abs_delta ON comparisons(abs_beng2_delta);
             CREATE INDEX IF NOT EXISTS idx_xml_extracted_installation_summary
                 ON xml_extracted(opwekkertype_verwarming, opwekkertype_tapwater);
             CREATE INDEX IF NOT EXISTS idx_api_requests_categories
                 ON api_requests(construction_year_category, housing_type, roof_type, installation);
+            CREATE INDEX IF NOT EXISTS idx_quarantine_cases_category
+                ON quarantine_cases(category);
             """
         )
         self._migrate(conn)
@@ -578,6 +588,26 @@ class ValidatorDatabase:
             """,
             (run_id, category, detail, filename, filename),
         )
+
+    def insert_quarantine_cases(
+        self,
+        conn: sqlite3.Connection,
+        xml_file_id: int,
+        cases: list[dict[str, Any]],
+    ) -> None:
+        for case in cases:
+            conn.execute(
+                """
+                INSERT INTO quarantine_cases (xml_file_id, category, detail, raw_json)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    xml_file_id,
+                    case.get("category"),
+                    case.get("detail"),
+                    _json(case),
+                ),
+            )
 
     def insert_extracted(self, conn: sqlite3.Connection, xml_file_id: int, fields: Any) -> None:
         data = fields.to_dict()

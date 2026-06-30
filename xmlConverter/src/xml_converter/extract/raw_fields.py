@@ -32,6 +32,8 @@ class RawMonitorbestandFields:
     hybride_warmtepomp_samenvatting: str | None = None
     type_verwarming: str | None = None
     hybride_warmtepomp_verwarmingssysteem: str | None = None
+    aantal_voorraadvaten: list[str] = field(default_factory=list)
+    verwarmingssystemen: list[dict[str, Any]] = field(default_factory=list)
     opwekkers: list[dict[str, Any]] = field(default_factory=list)
     tapwater_systemen: list[dict[str, Any]] = field(default_factory=list)
     ventilatie_systemen: list[dict[str, Any]] = field(default_factory=list)

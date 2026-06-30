@@ -4,9 +4,9 @@ from toolvalidator.runner import run_validation
 
 # Edit these values for each validation run.
 XML_DIR = Path("xml-files")
-OUT_DB = Path("out/apartment.sqlite")
+OUT_DB = Path("out/toolvalidator.sqlite")
 ADVIESTOOL_BASE_URL = "http://localhost:5000"
-BUILDING_KIND = "apartment"  # Use "apartment" for the apartment adviestool. "house" for single groundbased
+BUILDING_KIND = "house"  # Use "apartment" for the apartment adviestool. "house" for single groundbased
 
 # File selection.
 PATTERN = "*.xml"

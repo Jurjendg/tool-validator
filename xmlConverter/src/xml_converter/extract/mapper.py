@@ -1,4 +1,4 @@
-from lxml import etree
+import lxml.etree as etree
 
 from xml_converter.domain.models import BuildingRecord
 

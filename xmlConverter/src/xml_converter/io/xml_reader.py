@@ -1,5 +1,6 @@
 from pathlib import Path
-from lxml import etree
+
+import lxml.etree as etree
 
 
 def parse_xml(xml_path: Path) -> etree._ElementTree:

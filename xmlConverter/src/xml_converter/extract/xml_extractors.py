@@ -1,6 +1,6 @@
 from typing import Any
 
-from lxml import etree
+import lxml.etree as etree
 
 from xml_converter.extract.raw_fields import RawMonitorbestandFields
 
@@ -41,6 +41,19 @@ def _nodes_at(root: etree._Element, path: str) -> list[etree._Element]:
     return [node for node in nodes if isinstance(node, etree._Element)]
 
 
+def _texts_by_local_name(root: etree._Element, local_name: str) -> list[str]:
+    nodes = root.xpath(
+        ".//*[translate(local-name(), '" + _UPPER + "', '" + _LOWER + "')='" + local_name.lower() + "']"
+    )
+    return [
+        text
+        for node in nodes
+        if isinstance(node, etree._Element)
+        for text in [((node.text or "").strip())]
+        if text
+    ]
+
+
 def _element_to_dict(node: etree._Element) -> dict[str, Any]:
     result: dict[str, Any] = {}
     if node.attrib:
@@ -70,6 +83,39 @@ def _element_to_dict(node: etree._Element) -> dict[str, Any]:
     return result
 
 
+def _extract_verwarmingssystemen(root: etree._Element) -> list[dict[str, Any]]:
+    systems = _nodes_at(
+        root,
+        (
+            "EPSurvey/SurveySourceData/Energieprestatie/Gebouw/Invoer/"
+            "Verwarmingssystemen/Verwarmingssysteem"
+        ),
+    )
+    output: list[dict[str, Any]] = []
+    for item in systems:
+        opwekkers = _nodes_at(item, "Opwekkers/Opwekker")
+        hoofdtypes: list[str] = []
+        opwekkers_data: list[dict[str, Any]] = []
+        for opwekker in opwekkers:
+            hoofdtype = _text_at(opwekker, "HoofdtypeVerwarmingstoestel")
+            if hoofdtype:
+                hoofdtypes.append(hoofdtype)
+            opwekkers_data.append(_element_to_dict(opwekker))
+
+        output.append(
+            {
+                "id": item.get("id"),
+                "omschrijving": _text_at(item, "Omschrijving"),
+                "type_verwarming": _text_at(item, "TypeVerwarming"),
+                "hybride_warmtepomp": _text_at(item, "HybrideWarmtepomp"),
+                "aangesloten_oppervlak": _text_at(item, "AangeslotenOppervlak"),
+                "hoofdtypes": hoofdtypes,
+                "opwekkers": opwekkers_data,
+            }
+        )
+    return output
+
+
 def _extract_tapwater_systemen(root: etree._Element) -> list[dict[str, Any]]:
     systems = _nodes_at(
         root,
@@ -89,11 +135,15 @@ def _extract_tapwater_systemen(root: etree._Element) -> list[dict[str, Any]]:
 
         output.append(
             {
+                "id": item.get("id"),
+                "omschrijving": _text_at(item, "Omschrijving"),
                 "collectief": _text_at(item, "Collectief"),
+                "aangesloten_oppervlak": _text_at(item, "AangeslotenOppervlak"),
                 "toestel": toestellen[0] if toestellen else None,
                 "toestellen": toestellen,
                 "energiedrager": _text_at(item, "TapwaterOpwekking/Tapwatertoestel/Energiedrager"),
                 "douche_wtw_type": _text_at(item, "DoucheWTW/Type"),
+                "aantal_voorraadvaten": _texts_by_local_name(item, "AantalVoorraadvaten"),
             }
         )
     return output
@@ -269,6 +319,7 @@ def _extract_constructiedelen(
 def extract_required_fields(tree: etree._ElementTree) -> RawMonitorbestandFields:
     root = tree.getroot()
 
+    verwarmingssystemen = _extract_verwarmingssystemen(root)
     opwekkers = _nodes_at(
         root,
         (
@@ -392,6 +443,8 @@ def extract_required_fields(tree: etree._ElementTree) -> RawMonitorbestandFields
                 ),
             ],
         ),
+        aantal_voorraadvaten=_texts_by_local_name(root, "AantalVoorraadvaten"),
+        verwarmingssystemen=verwarmingssystemen,
         opwekkers=opwekkers_block,
         tapwater_systemen=tapwater_systemen,
         ventilatie_systemen=ventilatie_systemen,

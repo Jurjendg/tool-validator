@@ -20,6 +20,8 @@ from toolvalidator.adviestool_client import AdviestoolClient
 from toolvalidator.database import ValidatorDatabase
 from toolvalidator.labels import label_distance, label_from_beng2
 
+QUARANTINE_AREA_SHARE_THRESHOLD = 0.15
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -60,6 +62,110 @@ def _installation_detail(fields: Any) -> str:
     heat = str(getattr(fields, "opwekkertype_verwarming", "") or "<missing>").strip()
     hotwater = str(getattr(fields, "opwekkertype_tapwater", "") or "<missing>").strip()
     return f"{heat}/{hotwater}"
+
+
+def _normalize_system_value(value: Any) -> str:
+    return str(value or "").replace(" ", "").strip().lower()
+
+
+def _quarantine_case(category: str, detail: str, **data: Any) -> dict[str, Any]:
+    return {"category": category, "detail": detail, **data}
+
+
+def _significant_area_share(area: float | None, living_area: float | None) -> float | None:
+    if area is None or living_area is None or living_area <= 0:
+        return None
+    return area / living_area
+
+
+def _system_differs_from_main(values: list[Any], main_value: Any) -> bool:
+    normalized_main = _normalize_system_value(main_value)
+    if not normalized_main:
+        return False
+    normalized_values = {
+        _normalize_system_value(value)
+        for value in values
+        if _normalize_system_value(value)
+    }
+    if not normalized_values:
+        return False
+    return normalized_main not in normalized_values
+
+
+def _quarantine_cases(fields: Any) -> list[dict[str, Any]]:
+    cases: list[dict[str, Any]] = []
+    for raw_value in getattr(fields, "aantal_voorraadvaten", []) or []:
+        value = _float(raw_value)
+        if value is not None and value > 2:
+            cases.append(
+                _quarantine_case(
+                    "too_many_storage_vessels",
+                    f"AantalVoorraadvaten={raw_value}",
+                    aantal_voorraadvaten=raw_value,
+                )
+            )
+
+    living_area = _float(getattr(fields, "gebruiksoppervlakte", None))
+
+    for idx, system in enumerate(getattr(fields, "verwarmingssystemen", []) or [], start=1):
+        area = _float(system.get("aangesloten_oppervlak"))
+        share = _significant_area_share(area, living_area)
+        hoofdtypes = [
+            str(value).strip()
+            for value in system.get("hoofdtypes", [])
+            if str(value).strip()
+        ]
+        if (
+            share is not None
+            and share > QUARANTINE_AREA_SHARE_THRESHOLD
+            and _system_differs_from_main(hoofdtypes, getattr(fields, "opwekkertype_verwarming", None))
+        ):
+            cases.append(
+                _quarantine_case(
+                    "additional_heating_system",
+                    (
+                        f"Verwarmingssysteem[{idx}] area={area:g} "
+                        f"share={share:.3f} types={','.join(hoofdtypes)}"
+                    ),
+                    system_index=idx,
+                    area=area,
+                    share=share,
+                    main_type=getattr(fields, "opwekkertype_verwarming", None),
+                    system_types=hoofdtypes,
+                    system_id=system.get("id"),
+                )
+            )
+
+    for idx, system in enumerate(getattr(fields, "tapwater_systemen", []) or [], start=1):
+        area = _float(system.get("aangesloten_oppervlak"))
+        share = _significant_area_share(area, living_area)
+        toestellen = [
+            str(value).strip()
+            for value in system.get("toestellen", [])
+            if str(value).strip()
+        ]
+        if (
+            share is not None
+            and share > QUARANTINE_AREA_SHARE_THRESHOLD
+            and _system_differs_from_main(toestellen, getattr(fields, "opwekkertype_tapwater", None))
+        ):
+            cases.append(
+                _quarantine_case(
+                    "additional_hotwater_system",
+                    (
+                        f"Tapwatersysteem[{idx}] area={area:g} "
+                        f"share={share:.3f} toestellen={','.join(toestellen)}"
+                    ),
+                    system_index=idx,
+                    area=area,
+                    share=share,
+                    main_type=getattr(fields, "opwekkertype_tapwater", None),
+                    system_types=toestellen,
+                    system_id=system.get("id"),
+                )
+            )
+
+    return cases
 
 
 def _normalize_key_part(value: Any) -> str:
@@ -210,6 +316,19 @@ def run_validation(
                 print(f"[{index}/{len(xml_paths)}] skipped duplicate address ({unique_key}): {xml_path.name}")
                 continue
             seen_unique_keys.add(unique_key)
+
+            quarantine_cases = _quarantine_cases(fields)
+            if quarantine_cases:
+                active_conn, active_run_id = ensure_run()
+                file_hash = _sha256(xml_path) if hash_files else None
+                xml_file_id = db.insert_xml_file(active_conn, active_run_id, xml_path, file_hash)
+                db.insert_extracted(active_conn, xml_file_id, fields)
+                db.insert_quarantine_cases(active_conn, xml_file_id, quarantine_cases)
+                details = "; ".join(case["detail"] for case in quarantine_cases)
+                db.mark_status(active_conn, xml_file_id, "quarantined", "quarantine", details)
+                active_conn.commit()
+                print(f"[{index}/{len(xml_paths)}] quarantined: {xml_path.name}: {details}")
+                continue
 
             try:
                 payload, mapping_warnings = _build_payload_with_warnings(fields, building_kind)

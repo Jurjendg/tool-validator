@@ -35,8 +35,12 @@ def test_extract_required_fields_from_real_monitorbestand() -> None:
         },
     ]
     assert fields.rc_gevels is not None
+    assert fields.aantal_voorraadvaten
+    assert len(fields.verwarmingssystemen) > 0
+    assert fields.verwarmingssystemen[0]["aangesloten_oppervlak"] is not None
     assert len(fields.opwekkers) > 0
     assert len(fields.tapwater_systemen) > 0
+    assert fields.tapwater_systemen[0]["aangesloten_oppervlak"] is not None
     assert len(fields.ventilatie_systemen) > 0
     assert len(fields.zonne_energie_systemen) > 0
     assert len(fields.raam_constructiedelen) > 0

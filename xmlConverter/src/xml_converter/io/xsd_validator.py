@@ -1,5 +1,6 @@
 from pathlib import Path
-from lxml import etree
+
+import lxml.etree as etree
 
 
 def validate_xml_against_xsd(xml_path: Path, xsd_path: Path) -> None:
