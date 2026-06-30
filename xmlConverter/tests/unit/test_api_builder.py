@@ -543,6 +543,68 @@ def test_build_api_input_maps_installation_to_4_for_hr107_combi_example() -> Non
     assert payload["ShowerHeatRecovery"] == 1
 
 
+@pytest.mark.parametrize(
+    ("opwekkertype_verwarming", "opwekkertype_tapwater", "expected_installation"),
+    [
+        ("HR107", "HR107", 4),
+        ("ElektrischeWarmtepomp", "WarmtepompOverig", 6),
+        ("ElektrischeWarmtepomp", "CombiGKHRCW", 8),
+        ("ElektrischeWarmtepomp", "HR107", 8),
+        ("ElektrischeWarmtepomp", "Combitoestel", 8),
+        ("Conventioneel", "Combitoestel", 3),
+    ],
+)
+def test_build_api_input_maps_installation_pairs(
+    opwekkertype_verwarming: str,
+    opwekkertype_tapwater: str,
+    expected_installation: int,
+) -> None:
+    fields = RawMonitorbestandFields(
+        gebruiksoppervlakte="50.0",
+        construction_year="1974",
+        building_category="12",
+        dak_constructiedelen=ROOF_ITEMS_DEFAULT,
+        rc_gevels="1.80",
+        rc_vloeren="1.00",
+        ventilatie_systemen=VENTILATIE_ITEMS_DEFAULT,
+        raam_constructiedelen=RAAM_ITEMS_DEFAULT,
+        opwekkertype_verwarming=opwekkertype_verwarming,
+        verwarming_collectief="0",
+        opwekkertype_tapwater=opwekkertype_tapwater,
+        tapwater_collectief="0",
+        zonneboiler_aanwezig="0",
+        douche_wtw_aanwezig="0",
+        koeling_aanwezig="0",
+    )
+
+    payload = build_api_input(fields)
+
+    assert payload["Installation"] == expected_installation
+
+
+def test_build_api_input_raises_for_local_direct_gas_air_heater_with_gasboiler() -> None:
+    fields = RawMonitorbestandFields(
+        gebruiksoppervlakte="50.0",
+        construction_year="1974",
+        building_category="12",
+        dak_constructiedelen=ROOF_ITEMS_DEFAULT,
+        rc_gevels="1.80",
+        rc_vloeren="1.00",
+        ventilatie_systemen=VENTILATIE_ITEMS_DEFAULT,
+        raam_constructiedelen=RAAM_ITEMS_DEFAULT,
+        opwekkertype_verwarming="LokaleDirectGestookteLuchtverwarmerGas",
+        verwarming_collectief="0",
+        opwekkertype_tapwater="Gasboiler",
+        tapwater_collectief="0",
+        zonneboiler_aanwezig="0",
+        douche_wtw_aanwezig="0",
+        koeling_aanwezig="0",
+    )
+
+    with pytest.raises(ValueError, match="Installation mapping failed"):
+        build_api_input(fields)
+
+
 def test_build_api_input_maps_installation_to_7_for_external_heat_and_hotwater() -> None:
     fields = RawMonitorbestandFields(
         gebruiksoppervlakte="50.0",
@@ -1045,6 +1107,46 @@ def _apartment_fields(**overrides: object) -> RawMonitorbestandFields:
     }
     data.update(overrides)
     return RawMonitorbestandFields(**data)
+
+
+@pytest.mark.parametrize(
+    ("opwekkertype_verwarming", "opwekkertype_tapwater", "expected_installation"),
+    [
+        ("HR107", "HR107", 4),
+        ("ElektrischeWarmtepomp", "WarmtepompOverig", 6),
+        ("ElektrischeWarmtepomp", "CombiGKHRCW", 8),
+        ("ElektrischeWarmtepomp", "HR107", 8),
+        ("ElektrischeWarmtepomp", "Combitoestel", 8),
+        ("Conventioneel", "Combitoestel", 3),
+    ],
+)
+def test_build_apartment_api_input_maps_individual_installation_pairs(
+    opwekkertype_verwarming: str,
+    opwekkertype_tapwater: str,
+    expected_installation: int,
+) -> None:
+    fields = _apartment_fields(
+        opwekkertype_verwarming=opwekkertype_verwarming,
+        opwekkertype_tapwater=opwekkertype_tapwater,
+        verwarming_collectief="0",
+        tapwater_collectief="0",
+    )
+
+    payload = build_apartment_api_input(fields)
+
+    assert payload["Installation"] == expected_installation
+
+
+def test_build_apartment_api_input_raises_for_local_direct_gas_air_heater_with_gasboiler() -> None:
+    fields = _apartment_fields(
+        opwekkertype_verwarming="LokaleDirectGestookteLuchtverwarmerGas",
+        opwekkertype_tapwater="Gasboiler",
+        verwarming_collectief="0",
+        tapwater_collectief="0",
+    )
+
+    with pytest.raises(ValueError, match="Installation mapping failed"):
+        build_apartment_api_input(fields)
 
 
 @pytest.mark.parametrize(

@@ -6,11 +6,11 @@ from toolvalidator.runner import run_validation
 XML_DIR = Path("xml-files")
 OUT_DB = Path("out/apartment.sqlite")
 ADVIESTOOL_BASE_URL = "http://localhost:5000"
-BUILDING_KIND = "apartment"  # Use "apartment" for the apartment adviestool.
+BUILDING_KIND = "apartment"  # Use "apartment" for the apartment adviestool. "house" for single groundbased
 
 # File selection.
 PATTERN = "*.xml"
-LIMIT: int | None = 1000  # Set to None to process all matching files.
+LIMIT: int | None = None  # Set to None to process all matching files.
 
 # Runtime options.
 API_TIMEOUT_SECONDS = 60.0

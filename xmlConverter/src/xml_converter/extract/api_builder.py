@@ -454,6 +454,7 @@ def _map_installation(fields: RawMonitorbestandFields) -> int:
     combi_tapwater = {"Combitoestel", "CombiGK", "CombiGKCW", "CombiGKHRCW"}
     hr104_107 = {"HR104", "HR104Lucht", "HR107", "HR107Lucht"}
     conv_types = {"Conventioneel", "VR", "ConventioneelLucht", "VRLucht"}
+    heat_pump_hybrid_tapwater = {"Combitoestel", "CombiGKHRCW", "HR107"}
 
     if len(opwekker_types) > 1 and _flag_to_bool(fields.hybride_warmtepomp_samenvatting):
         opwekker_set = set(opwekker_types)
@@ -466,7 +467,10 @@ def _map_installation(fields: RawMonitorbestandFields) -> int:
 
     zonneboiler_aanwezig = _flag_to_bool(fields.zonneboiler_aanwezig)
     if not zonneboiler_aanwezig:
-        if opwekkertype_verwarming in {"LokaalGasMetAfvoer", "LokaalGasZonderAfvoer"} and opwekkertype_tapwater in {
+        if opwekkertype_verwarming in {
+            "LokaalGasMetAfvoer",
+            "LokaalGasZonderAfvoer",
+        } and opwekkertype_tapwater in {
             "Badgeiser",
             "Keukengeiser",
         }:
@@ -477,11 +481,15 @@ def _map_installation(fields: RawMonitorbestandFields) -> int:
             return 3
         if opwekkertype_verwarming in hr104_107 and opwekkertype_tapwater in combi_tapwater:
             return 4
+        if opwekkertype_verwarming == "HR107" and opwekkertype_tapwater == "HR107":
+            return 4
         if opwekkertype_verwarming == "ElektrischeWarmtepomp" and opwekkertype_tapwater in {
             "WarmtepompRetourlucht",
             "WarmtepompOverig",
         }:
             return 6
+        if opwekkertype_verwarming == "ElektrischeWarmtepomp" and opwekkertype_tapwater in heat_pump_hybrid_tapwater:
+            return 8
     else:
         if opwekkertype_verwarming in hr104_107 and opwekkertype_tapwater in combi_tapwater.union(
             {"ZonneboilerMetGeïntegreerdeGasgestookteNaverwarming"}
