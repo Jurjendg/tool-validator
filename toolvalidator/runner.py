@@ -12,7 +12,7 @@ XML_CONVERTER_SRC = ROOT / "xmlConverter" / "src"
 if str(XML_CONVERTER_SRC) not in sys.path:
     sys.path.insert(0, str(XML_CONVERTER_SRC))
 
-from xml_converter.extract.api_builder import build_api_input
+from xml_converter.extract.api_builder import build_api_input, build_apartment_api_input
 from xml_converter.extract.xml_extractors import extract_required_fields
 from xml_converter.io.xml_reader import parse_xml
 
@@ -38,10 +38,13 @@ def _float(value: Any) -> float | None:
         return None
 
 
-def _build_payload_with_warnings(fields: Any) -> tuple[dict[str, Any], list[str]]:
+def _build_payload_with_warnings(fields: Any, building_kind: str) -> tuple[dict[str, Any], list[str]]:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        payload = build_api_input(fields)
+        if building_kind == "apartment":
+            payload = build_apartment_api_input(fields)
+        else:
+            payload = build_api_input(fields)
     return payload, [str(item.message) for item in caught]
 
 
@@ -91,14 +94,17 @@ def _unique_address_key_from_values(
     return f"FILE:{fallback}"
 
 
-def _load_existing_unique_keys(conn: Any) -> set[str]:
+def _load_existing_unique_keys(conn: Any, building_kind: str) -> set[str]:
     keys: set[str] = set()
     for row in conn.execute(
         """
         SELECT zipcode, house_number, building_annotation, bag_residence_id, xml_files.filename
         FROM xml_extracted
         JOIN xml_files ON xml_files.id = xml_extracted.xml_file_id
-        """
+        JOIN runs ON runs.id = xml_files.run_id
+        WHERE COALESCE(runs.building_kind, 'house') = ?
+        """,
+        (building_kind,),
     ):
         keys.add(
             _unique_address_key_from_values(
@@ -113,8 +119,11 @@ def _load_existing_unique_keys(conn: Any) -> set[str]:
         """
         SELECT detail
         FROM excluded_cases
+        JOIN runs ON runs.id = excluded_cases.run_id
         WHERE category = 'duplicate_address'
-        """
+          AND COALESCE(runs.building_kind, 'house') = ?
+        """,
+        (building_kind,),
     ):
         keys.add(str(row["detail"]))
     return keys
@@ -129,7 +138,11 @@ def run_validation(
     notes: str | None = None,
     timeout: float = 60.0,
     hash_files: bool = True,
+    building_kind: str = "house",
 ) -> int | None:
+    if building_kind not in {"house", "apartment"}:
+        raise ValueError(f"Unsupported building_kind '{building_kind}'.")
+
     xml_paths = sorted(xml_dir.glob(pattern))
     if limit is not None:
         xml_paths = xml_paths[:limit]
@@ -147,13 +160,13 @@ def run_validation(
             conn = db.connect()
             db.initialize(conn)
         if run_id is None:
-            run_id = db.create_run(conn, xml_dir, base_url, notes)
+            run_id = db.create_run(conn, xml_dir, base_url, notes, building_kind)
         return conn, run_id
 
     if out_db.exists():
         conn = db.connect()
         db.initialize(conn)
-        existing_unique_keys = _load_existing_unique_keys(conn)
+        existing_unique_keys = _load_existing_unique_keys(conn, building_kind)
         if existing_unique_keys:
             print(f"Resume mode: loaded {len(existing_unique_keys)} existing address keys from {out_db}")
 
@@ -171,8 +184,11 @@ def run_validation(
                 print(f"[{index}/{len(xml_paths)}] extract error: {xml_path.name}: {exc}")
                 continue
 
-            if _is_apartment(fields):
+            if building_kind == "house" and _is_apartment(fields):
                 print(f"[{index}/{len(xml_paths)}] skipped apartment: {xml_path.name}")
+                continue
+            if building_kind == "apartment" and not _is_apartment(fields):
+                print(f"[{index}/{len(xml_paths)}] skipped non-apartment: {xml_path.name}")
                 continue
 
             unique_key = _unique_address_key(fields, xml_path.name)
@@ -196,7 +212,7 @@ def run_validation(
             seen_unique_keys.add(unique_key)
 
             try:
-                payload, mapping_warnings = _build_payload_with_warnings(fields)
+                payload, mapping_warnings = _build_payload_with_warnings(fields, building_kind)
             except Exception as exc:
                 if _is_unsupported_installation_error(exc):
                     active_conn, active_run_id = ensure_run()
@@ -293,6 +309,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--notes", default=None)
     parser.add_argument("--no-hash", action="store_true", help="Skip SHA-256 file hashes for faster runs.")
+    parser.add_argument(
+        "--building-kind",
+        choices=("house", "apartment"),
+        default="house",
+        help="Select the adviestool input builder and XML category filter.",
+    )
     args = parser.parse_args(argv)
 
     run_id = run_validation(
@@ -304,9 +326,10 @@ def main(argv: list[str] | None = None) -> int:
         notes=args.notes,
         timeout=args.timeout,
         hash_files=not args.no_hash,
+        building_kind=args.building_kind,
     )
     if run_id is None:
-        print(f"No non-apartment XML files or extraction errors found; no run written to {args.out_db}")
+        print(f"No {args.building_kind} XML files or extraction errors found; no run written to {args.out_db}")
     else:
         print(f"Run {run_id} written to {args.out_db}")
     return 0

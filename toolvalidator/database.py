@@ -30,6 +30,22 @@ def _int(value: Any) -> int | None:
         return None
 
 
+def _first_dict(value: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    for key in keys:
+        candidate = value.get(key)
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
+def _first_value(value: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        candidate = value.get(key)
+        if candidate is not None:
+            return candidate
+    return None
+
+
 @dataclass(slots=True)
 class ValidatorDatabase:
     path: Path
@@ -50,6 +66,7 @@ class ValidatorDatabase:
                 started_at TEXT NOT NULL,
                 xml_dir TEXT NOT NULL,
                 adviestool_base_url TEXT NOT NULL,
+                building_kind TEXT NOT NULL DEFAULT 'house',
                 toolvalidator_version TEXT,
                 notes TEXT
             );
@@ -100,12 +117,17 @@ class ValidatorDatabase:
 
             CREATE TABLE IF NOT EXISTS api_requests (
                 xml_file_id INTEGER PRIMARY KEY REFERENCES xml_files(id) ON DELETE CASCADE,
+                building_kind TEXT NOT NULL DEFAULT 'house',
                 construction_year_category INTEGER,
                 housing_type INTEGER,
+                subtype INTEGER,
                 living_area REAL,
                 roof_type INTEGER,
+                number_of_stories INTEGER,
+                back_facade INTEGER,
                 wall_insulation INTEGER,
                 floor_insulation INTEGER,
+                roof_insulation INTEGER,
                 sloped_roof_insulation INTEGER,
                 flat_roof_insulation INTEGER,
                 glass_living_area INTEGER,
@@ -285,6 +307,34 @@ class ValidatorDatabase:
             if column not in columns:
                 conn.execute(statement)
 
+        run_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        if "building_kind" not in run_columns:
+            conn.execute("ALTER TABLE runs ADD COLUMN building_kind TEXT NOT NULL DEFAULT 'house'")
+
+        request_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(api_requests)").fetchall()
+        }
+        request_migrations = {
+            "building_kind": "ALTER TABLE api_requests ADD COLUMN building_kind TEXT NOT NULL DEFAULT 'house'",
+            "subtype": "ALTER TABLE api_requests ADD COLUMN subtype INTEGER",
+            "number_of_stories": "ALTER TABLE api_requests ADD COLUMN number_of_stories INTEGER",
+            "back_facade": "ALTER TABLE api_requests ADD COLUMN back_facade INTEGER",
+            "roof_insulation": "ALTER TABLE api_requests ADD COLUMN roof_insulation INTEGER",
+        }
+        for column, statement in request_migrations.items():
+            if column not in request_columns:
+                conn.execute(statement)
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_api_requests_apartment
+                ON api_requests(building_kind, subtype, number_of_stories, back_facade, installation)
+            """
+        )
+
         summary_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(construction_part_summary)").fetchall()
@@ -305,6 +355,7 @@ class ValidatorDatabase:
             SELECT
                 xf.id AS xml_file_id,
                 xf.run_id,
+                r.building_kind,
                 xf.filename,
                 xf.path,
                 xf.status,
@@ -334,11 +385,16 @@ class ValidatorDatabase:
                 xe.u_ramen,
                 xe.g_ramen,
                 req.construction_year_category,
+                req.building_kind AS request_building_kind,
                 req.housing_type,
+                req.subtype,
                 req.living_area,
                 req.roof_type,
+                req.number_of_stories,
+                req.back_facade,
                 req.wall_insulation,
                 req.floor_insulation,
+                req.roof_insulation,
                 req.sloped_roof_insulation,
                 req.flat_roof_insulation,
                 req.glass_living_area,
@@ -387,6 +443,7 @@ class ValidatorDatabase:
                 , COALESCE(cps_paneel.total_area, 0) AS paneel_area_total
                 , cps_paneel.weighted_average_u AS paneel_average_u
             FROM xml_files xf
+            LEFT JOIN runs r ON r.id = xf.run_id
             LEFT JOIN xml_extracted xe ON xe.xml_file_id = xf.id
             LEFT JOIN api_requests req ON req.xml_file_id = xf.id
             LEFT JOIN api_responses ar ON ar.xml_file_id = xf.id
@@ -451,16 +508,18 @@ class ValidatorDatabase:
         xml_dir: Path,
         adviestool_base_url: str,
         notes: str | None,
+        building_kind: str = "house",
     ) -> int:
         cur = conn.execute(
             """
-            INSERT INTO runs (started_at, xml_dir, adviestool_base_url, toolvalidator_version, notes)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO runs (started_at, xml_dir, adviestool_base_url, building_kind, toolvalidator_version, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.now(timezone.utc).isoformat(),
                 str(xml_dir),
                 adviestool_base_url,
+                building_kind,
                 "0.1.0",
                 notes,
             ),
@@ -812,19 +871,34 @@ class ValidatorDatabase:
     ) -> None:
         solar_panels = payload.get("SolarPanels") or []
         solar_area = sum(_float(panel.get("PVArea")) or 0.0 for panel in solar_panels)
+        subtype = payload.get("SubType", payload.get("Subtype"))
+        building_kind = "apartment" if subtype is not None else "house"
         conn.execute(
             """
-            INSERT INTO api_requests
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO api_requests (
+                xml_file_id, building_kind, construction_year_category, housing_type,
+                subtype, living_area, roof_type, number_of_stories, back_facade,
+                wall_insulation, floor_insulation, roof_insulation,
+                sloped_roof_insulation, flat_roof_insulation, glass_living_area,
+                glass_bedroom_area, installation, shower_heat_recovery, cooling,
+                ventilation, solar_panel_count, solar_panel_area_total, payload_json,
+                mapping_warnings_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 xml_file_id,
+                building_kind,
                 payload.get("ConstructionYearCategory"),
                 payload.get("HousingType"),
+                subtype,
                 payload.get("LivingArea"),
                 payload.get("RoofType"),
+                payload.get("NumberOfStories"),
+                payload.get("BackFacade"),
                 payload.get("WallInsulation"),
                 payload.get("FloorInsulation"),
+                payload.get("RoofInsulation"),
                 payload.get("SlopedRoofInsulation"),
                 payload.get("FlatRoofInsulation"),
                 payload.get("GlassLivingArea"),
@@ -847,10 +921,23 @@ class ValidatorDatabase:
         http_status: int | None,
         response_json: dict[str, Any] | None,
     ) -> tuple[float | None, str | None]:
-        current_house = (response_json or {}).get("Current_House") or {}
-        predicted_beng2 = _float(current_house.get("BENG2"))
-        predicted_label = current_house.get("Energy_label")
-        warnings_json = (response_json or {}).get("Warnings") or []
+        response = response_json or {}
+        current = _first_dict(
+            response,
+            (
+                "Current_House",
+                "CurrentHouse",
+                "Current_Apartment",
+                "CurrentApartment",
+                "Current",
+            ),
+        )
+        predicted_beng2 = _float(_first_value(current, ("BENG2", "beng2")))
+        predicted_label = _first_value(
+            current,
+            ("Energy_label", "EnergyLabel", "energy_label", "label", "Label"),
+        )
+        warnings_json = _first_value(response, ("Warnings", "warnings")) or []
         conn.execute(
             """
             INSERT INTO api_responses

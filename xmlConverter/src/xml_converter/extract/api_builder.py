@@ -349,6 +349,15 @@ def _flag_to_bool(value: str | None) -> bool:
     return value.strip().lower() in {"1", "true", "ja", "yes"}
 
 
+def _parse_float_or_none(value: object) -> float | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def _normalize_value(value: str | None) -> str:
     return (value or "").strip()
 
@@ -719,6 +728,328 @@ def _map_solar_panels(fields: RawMonitorbestandFields) -> list[dict[str, object]
         solar_panels.append(panel)
 
     return solar_panels
+
+
+def _map_apartment_subtype(fields: RawMonitorbestandFields) -> int:
+    raw = fields.building_category_supplement
+    if raw is None or raw.strip() == "":
+        raise ValueError("Subtype mapping failed: 'BuildingCategorySupplement' is missing.")
+
+    mapping = {
+        "3": 1,  # Hoek/vloer -> corner ground floor
+        "6": 2,  # Tussen/vloer -> in between ground floor
+        "2": 3,  # Hoek/midden -> corner mid floor
+        "5": 4,  # Tussen/midden -> in between mid floor
+        "1": 5,  # Hoek/dak -> corner top floor
+        "4": 6,  # Tussen/dak -> in between top floor
+        "7": 7,  # Tussen/dak/vloer -> entire top floor
+    }
+    value = raw.strip()
+    if value not in mapping:
+        raise ValueError(
+            f"Subtype mapping failed: unsupported BuildingCategorySupplement '{raw}'."
+        )
+    return mapping[value]
+
+
+def _map_apartment_number_of_stories(fields: RawMonitorbestandFields) -> int:
+    types = {
+        str(item.get("type") or "").strip()
+        for item in fields.gebruiksfuncties
+        if str(item.get("type") or "").strip()
+    }
+    if "WoongebouwMeerdereWoonlagen" in types:
+        return 2
+    if "WoongebouwEenWoonlaag" in types:
+        return 1
+    raise ValueError(
+        "NumberOfStories mapping failed: no apartment Gebruiksfunctie type found."
+    )
+
+
+def _default_apartment_insulation(fields: RawMonitorbestandFields) -> int:
+    construction_year_category = _map_construction_year_category(fields)
+    if construction_year_category <= 4:
+        return 1
+    if construction_year_category <= 5:
+        return 2
+    if construction_year_category <= 6:
+        return 3
+    return 4
+
+
+def _map_apartment_wall_insulation(fields: RawMonitorbestandFields) -> int:
+    raw = fields.rc_gevels
+    if raw is None or raw.strip() == "":
+        default = _default_apartment_insulation(fields)
+        warnings.warn(
+            f"WallInsulation mapping warning: 'RcGevels' is missing; defaulting to level {default} for apartment input.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return default
+    return _map_wall_insulation(fields)
+
+
+def _map_apartment_floor_insulation(fields: RawMonitorbestandFields) -> int:
+    raw = fields.rc_vloeren
+    if raw is None or raw.strip() == "":
+        default = _default_apartment_insulation(fields)
+        warnings.warn(
+            f"FloorInsulation mapping warning: 'RcVloeren' is missing; defaulting to level {default} for apartment input.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return default
+    return _map_floor_insulation(fields)
+
+
+def _orientation_degrees(raw: object) -> int | None:
+    orientation_map = {
+        "N": 0,
+        "NO": 45,
+        "O": 90,
+        "ZO": 135,
+        "Z": 180,
+        "ZW": 225,
+        "W": 270,
+        "NW": 315,
+    }
+    value = str(raw or "").strip().upper()
+    return orientation_map.get(value)
+
+
+def _has_opposite_orientation_pair(orientations: list[str]) -> bool:
+    degrees = [_orientation_degrees(value) for value in orientations]
+    clean_degrees = [value for value in degrees if value is not None]
+    for degree in clean_degrees:
+        if (degree + 180) % 360 in clean_degrees:
+            return True
+    return False
+
+
+def _map_apartment_back_facade(fields: RawMonitorbestandFields) -> int:
+    area_by_orientation: dict[str, float] = {}
+    for item in fields.constructiedelen:
+        part_kind = str(item.get("part_kind") or "").strip().lower()
+        vlaktype = str(item.get("vlaktype") or "").strip().lower()
+        if part_kind not in {"dicht", "raam", "deur", "paneel"}:
+            continue
+        if part_kind == "dicht" and vlaktype != "gevel":
+            continue
+
+        slope = _parse_float_or_none(item.get("hellingshoek"))
+        if slope is None or slope < 75 or slope > 105:
+            continue
+
+        orientation = str(item.get("orientatie") or "").strip().upper()
+        if _orientation_degrees(orientation) is None:
+            continue
+
+        area = _parse_float_or_none(item.get("oppervlakte"))
+        if area is None or area <= 0:
+            continue
+
+        area_by_orientation[orientation] = area_by_orientation.get(orientation, 0.0) + area
+
+    if not area_by_orientation:
+        warnings.warn(
+            "BackFacade mapping warning: no vertical facade construction parts with orientation found; defaulting to 0.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return 0
+
+    largest_area = max(area_by_orientation.values())
+    significant = [
+        orientation
+        for orientation, area in area_by_orientation.items()
+        if area >= largest_area * 0.20
+    ]
+    significant.sort(key=lambda orientation: _orientation_degrees(orientation) or 0)
+    has_opposite_pair = _has_opposite_orientation_pair(significant)
+
+    supplement = (fields.building_category_supplement or "").strip()
+    if supplement in {"4", "5", "6", "7"}:
+        if len(significant) not in {1, 2}:
+            warnings.warn(
+                (
+                    "BackFacade mapping warning: expected 1 or 2 significant facade orientations "
+                    f"for tussen apartment supplement {supplement}, got {len(significant)} ({significant})."
+                ),
+                UserWarning,
+                stacklevel=2,
+            )
+        if len(significant) >= 2 and not has_opposite_pair:
+            warnings.warn(
+                (
+                    "BackFacade mapping warning: multiple significant facade orientations are not opposite "
+                    f"for supplement {supplement}: {significant}."
+                ),
+                UserWarning,
+                stacklevel=2,
+            )
+        return 1 if has_opposite_pair else 0
+
+    if supplement in {"1", "2", "3", "8"}:
+        if len(significant) not in {2, 3}:
+            warnings.warn(
+                (
+                    "BackFacade mapping warning: expected 2 or 3 significant facade orientations "
+                    f"for hoek apartment supplement {supplement}, got {len(significant)} ({significant})."
+                ),
+                UserWarning,
+                stacklevel=2,
+            )
+        if len(significant) >= 3 and not has_opposite_pair:
+            warnings.warn(
+                (
+                    "BackFacade mapping warning: significant facade orientations do not include an opposite pair "
+                    f"for supplement {supplement}: {significant}."
+                ),
+                UserWarning,
+                stacklevel=2,
+            )
+        return 1 if len(significant) >= 3 and has_opposite_pair else 0
+
+    raise ValueError(
+        f"BackFacade mapping failed: unsupported BuildingCategorySupplement '{supplement or '<missing>'}'."
+    )
+
+
+def _warn_if_apartment_roof_not_flat(fields: RawMonitorbestandFields) -> None:
+    horizontal_area = 0.0
+    total_area = 0.0
+    for item in fields.dak_constructiedelen:
+        area = _parse_float_or_none(item.get("oppervlakte"))
+        if area is None or area <= 0:
+            continue
+        total_area += area
+        if str(item.get("orientatie") or "").strip().lower() == "horizontaal":
+            horizontal_area += area
+
+    if total_area <= 0:
+        warnings.warn(
+            "Apartment roof mapping warning: no valid roof area found; assuming flat roof for apartment input.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return
+
+    ratio = horizontal_area / total_area
+    if ratio <= 0.75:
+        warnings.warn(
+            (
+                "Apartment roof mapping warning: horizontal roof area is not more than 75% "
+                f"of total roof area ({ratio:.3f}); still assuming flat roof for apartment input."
+            ),
+            UserWarning,
+            stacklevel=2,
+        )
+
+
+def _map_apartment_roof_insulation(fields: RawMonitorbestandFields) -> int:
+    if fields.dak_constructiedelen:
+        weighted_num = 0.0
+        weighted_den = 0.0
+        for item in fields.dak_constructiedelen:
+            area = _parse_float_or_none(item.get("oppervlakte"))
+            rc = _parse_float_or_none(item.get("dicht_rc"))
+            if area is None or rc is None or area <= 0:
+                continue
+            weighted_num += area * rc
+            weighted_den += area
+
+        if weighted_den > 0:
+            return _classify_roof_insulation(weighted_num / weighted_den)
+
+        default = _default_apartment_insulation(fields)
+        warnings.warn(
+            f"RoofInsulation mapping warning: roof entries contain no valid Rc/area values; defaulting to level {default}.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return default
+
+    rc_daken = _parse_float_or_none(fields.rc_daken)
+    if rc_daken is None:
+        default = _default_apartment_insulation(fields)
+        warnings.warn(
+            f"RoofInsulation mapping warning: no roof entries present and 'RcDaken' is missing; defaulting to level {default}.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return default
+
+    warnings.warn(
+        "RoofInsulation mapping warning: no roof entries present; using summary 'RcDaken'.",
+        UserWarning,
+        stacklevel=2,
+    )
+    return _classify_roof_insulation(rc_daken)
+
+
+def _map_apartment_installation(fields: RawMonitorbestandFields) -> int:
+    heating_collective = _flag_to_bool(fields.verwarming_collectief)
+    tapwater_collective = _flag_to_bool(fields.tapwater_collectief)
+    opwekkertype_verwarming = _normalize_value(fields.opwekkertype_verwarming)
+    opwekkertype_tapwater = _normalize_value(fields.opwekkertype_tapwater)
+
+    if heating_collective != tapwater_collective:
+        raise ValueError(
+            "Installation mapping failed: mixed collective/individual heating and hot water is unsupported."
+        )
+
+    if not heating_collective and not tapwater_collective:
+        return _map_installation(fields)
+
+    hr104_107 = {"HR104", "HR104Lucht", "HR107", "HR107Lucht"}
+    combi_tapwater = {"Combitoestel", "CombiGK", "CombiGKCW", "CombiGKHRCW"}
+    heat_pump_tapwater = {"WarmtepompRetourlucht", "WarmtepompOverig"}
+
+    if opwekkertype_verwarming in hr104_107 and opwekkertype_tapwater in combi_tapwater:
+        return 9
+    if opwekkertype_verwarming == "ElektrischeWarmtepomp" and opwekkertype_tapwater in heat_pump_tapwater:
+        return 10
+
+    raise ValueError(
+        "Installation mapping failed: "
+        f"unsupported collective combination '{opwekkertype_verwarming}/{opwekkertype_tapwater}'."
+    )
+
+
+def _map_apartment_solar_panels(fields: RawMonitorbestandFields) -> list[dict[str, object]]:
+    panels = _map_solar_panels(fields)
+    for panel in panels:
+        panel.pop("RoofType", None)
+    return panels
+
+
+def build_apartment_api_input(fields: RawMonitorbestandFields) -> dict[str, object]:
+    if str(fields.building_category or "").strip() != "7":
+        raise ValueError("Apartment API input mapping failed: BuildingCategory is not 7.")
+
+    _warn_if_apartment_roof_not_flat(fields)
+    installation = _map_apartment_installation(fields)
+
+    return {
+        "ConstructionYearCategory": _map_construction_year_category(fields),
+        "SubType": _map_apartment_subtype(fields),
+        "LivingArea": _parse_living_area(fields),
+        "NumberOfStories": _map_apartment_number_of_stories(fields),
+        "BackFacade": _map_apartment_back_facade(fields),
+        "WallInsulation": _map_apartment_wall_insulation(fields),
+        "FloorInsulation": _map_apartment_floor_insulation(fields),
+        "RoofInsulation": _map_apartment_roof_insulation(fields),
+        "GlassLivingArea": _map_glass_areas(fields, 3)[1],
+        "Installation": installation,
+        "ShowerHeatRecovery": _map_shower_heat_recovery(fields),
+        "Cooling": _map_cooling(fields),
+        "Ventilation": _map_ventilation(fields),
+        "ElectricCooking": 2 if installation in {6, 7} else 1,
+        "Residents": 3,
+        "SolarPanels": _map_apartment_solar_panels(fields),
+    }
 
 
 def build_api_input(fields: RawMonitorbestandFields) -> dict[str, object]:

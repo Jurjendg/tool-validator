@@ -1,6 +1,6 @@
 ﻿import pytest
 
-from xml_converter.extract.api_builder import build_api_input
+from xml_converter.extract.api_builder import build_api_input, build_apartment_api_input
 from xml_converter.extract.raw_fields import RawMonitorbestandFields
 
 pytestmark = [
@@ -996,5 +996,220 @@ def test_build_api_input_uses_specific_wattpeak_when_spv_missing_or_zero() -> No
 
     assert "PVTotalWattPeak" not in panel
     assert panel["SpecificWattpeak"] == 175.0
+
+
+def _apartment_fields(**overrides: object) -> RawMonitorbestandFields:
+    data = {
+        "gebruiksoppervlakte": "50.0",
+        "construction_year": "1974",
+        "building_category": "7",
+        "building_category_supplement": "5",
+        "dak_constructiedelen": [
+            {"orientatie": "horizontaal", "oppervlakte": "20.0", "dicht_rc": "2.50"},
+        ],
+        "rc_gevels": "1.80",
+        "rc_vloeren": DEFAULT_RC_VLOEREN,
+        "rc_daken": "2.50",
+        "ventilatie_systemen": VENTILATIE_ITEMS_DEFAULT,
+        "raam_constructiedelen": RAAM_ITEMS_DEFAULT,
+        "gebruiksfuncties": [
+            {
+                "rekenzone_idx": 1,
+                "functie_idx": 1,
+                "rekenzone_omschrijving": "Rekenzone 1",
+                "type": "WoongebouwEenWoonlaag",
+            }
+        ],
+        "constructiedelen": [
+            {
+                "part_kind": "dicht",
+                "vlaktype": "gevel",
+                "orientatie": "N",
+                "hellingshoek": "90",
+                "oppervlakte": "10.0",
+            },
+            {
+                "part_kind": "raam",
+                "vlaktype": "gevel",
+                "orientatie": "Z",
+                "hellingshoek": "90",
+                "oppervlakte": "8.0",
+                "raam_beglazing": "HR++",
+            },
+        ],
+        "opwekkertype_verwarming": "HR107",
+        "verwarming_collectief": "0",
+        "opwekkertype_tapwater": "CombiGKHRCW",
+        "tapwater_collectief": "0",
+        "zonneboiler_aanwezig": "0",
+    }
+    data.update(overrides)
+    return RawMonitorbestandFields(**data)
+
+
+@pytest.mark.parametrize(
+    ("supplement", "expected_subtype"),
+    [
+        ("3", 1),
+        ("6", 2),
+        ("2", 3),
+        ("5", 4),
+        ("1", 5),
+        ("4", 6),
+        ("7", 7),
+    ],
+)
+def test_build_apartment_api_input_maps_subtype(
+    supplement: str, expected_subtype: int
+) -> None:
+    fields = _apartment_fields(building_category_supplement=supplement)
+
+    payload = build_apartment_api_input(fields)
+
+    assert payload["SubType"] == expected_subtype
+
+
+def test_build_apartment_api_input_raises_for_unmapped_subtype_8() -> None:
+    fields = _apartment_fields(building_category_supplement="8")
+
+    with pytest.raises(ValueError, match="BuildingCategorySupplement '8'"):
+        build_apartment_api_input(fields)
+
+
+def test_build_apartment_api_input_maps_number_of_stories_from_gebruiksfunctie() -> None:
+    fields = _apartment_fields(
+        gebruiksfuncties=[
+            {
+                "rekenzone_idx": 1,
+                "functie_idx": 1,
+                "rekenzone_omschrijving": "Rekenzone 1",
+                "type": "WoongebouwMeerdereWoonlagen",
+            }
+        ]
+    )
+
+    payload = build_apartment_api_input(fields)
+
+    assert payload["NumberOfStories"] == 2
+
+
+def test_build_apartment_api_input_maps_back_facade_for_tussen_opposite_facades() -> None:
+    fields = _apartment_fields(
+        building_category_supplement="5",
+        constructiedelen=[
+            {
+                "part_kind": "dicht",
+                "vlaktype": "gevel",
+                "orientatie": "N",
+                "hellingshoek": "90",
+                "oppervlakte": "12.0",
+            },
+            {
+                "part_kind": "paneel",
+                "vlaktype": None,
+                "orientatie": "Z",
+                "hellingshoek": "90",
+                "oppervlakte": "4.0",
+            },
+            {
+                "part_kind": "raam",
+                "vlaktype": "dak",
+                "orientatie": "O",
+                "hellingshoek": "45",
+                "oppervlakte": "10.0",
+            },
+        ],
+    )
+
+    payload = build_apartment_api_input(fields)
+
+    assert payload["BackFacade"] == 1
+
+
+def test_build_apartment_api_input_filters_small_facade_orientations() -> None:
+    fields = _apartment_fields(
+        building_category_supplement="5",
+        constructiedelen=[
+            {
+                "part_kind": "dicht",
+                "vlaktype": "gevel",
+                "orientatie": "N",
+                "hellingshoek": "90",
+                "oppervlakte": "12.0",
+            },
+            {
+                "part_kind": "raam",
+                "vlaktype": "gevel",
+                "orientatie": "Z",
+                "hellingshoek": "90",
+                "oppervlakte": "2.0",
+            },
+        ],
+    )
+
+    payload = build_apartment_api_input(fields)
+
+    assert payload["BackFacade"] == 0
+
+
+def test_build_apartment_api_input_warns_when_roof_is_not_mostly_flat() -> None:
+    fields = _apartment_fields(
+        dak_constructiedelen=[
+            {"orientatie": "horizontaal", "oppervlakte": "10.0", "dicht_rc": "2.50"},
+            {"orientatie": "Z", "oppervlakte": "10.0", "dicht_rc": "2.50"},
+        ]
+    )
+
+    with pytest.warns(UserWarning, match="horizontal roof area"):
+        payload = build_apartment_api_input(fields)
+
+    assert payload["RoofInsulation"] == 3
+
+
+def test_build_apartment_api_input_defaults_missing_floor_insulation_with_warning() -> None:
+    fields = _apartment_fields(rc_vloeren=None)
+
+    with pytest.warns(UserWarning, match="RcVloeren"):
+        payload = build_apartment_api_input(fields)
+
+    assert payload["FloorInsulation"] == 1
+
+
+def test_build_apartment_api_input_maps_collective_hr_to_installation_9() -> None:
+    fields = _apartment_fields(
+        verwarming_collectief="1",
+        tapwater_collectief="1",
+        opwekkertype_verwarming="HR107",
+        opwekkertype_tapwater="CombiGKHRCW",
+    )
+
+    payload = build_apartment_api_input(fields)
+
+    assert payload["Installation"] == 9
+
+
+def test_build_apartment_api_input_maps_collective_heat_pump_to_installation_10() -> None:
+    fields = _apartment_fields(
+        verwarming_collectief="1",
+        tapwater_collectief="1",
+        opwekkertype_verwarming="ElektrischeWarmtepomp",
+        opwekkertype_tapwater="WarmtepompOverig",
+    )
+
+    payload = build_apartment_api_input(fields)
+
+    assert payload["Installation"] == 10
+
+
+def test_build_apartment_api_input_raises_for_mixed_collective_installation() -> None:
+    fields = _apartment_fields(
+        verwarming_collectief="1",
+        tapwater_collectief="0",
+        opwekkertype_verwarming="HR107",
+        opwekkertype_tapwater="CombiGKHRCW",
+    )
+
+    with pytest.raises(ValueError, match="Installation mapping failed"):
+        build_apartment_api_input(fields)
 
 

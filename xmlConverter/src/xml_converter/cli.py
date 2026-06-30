@@ -4,7 +4,7 @@ from pathlib import Path
 import typer
 
 from xml_converter.config import ExtractConfig
-from xml_converter.extract.api_builder import build_api_input
+from xml_converter.extract.api_builder import build_api_input, build_apartment_api_input
 from xml_converter.extract.export_raw_fields import export_raw_fields
 from xml_converter.extract.export_prediction_input import export_prediction_input
 from xml_converter.extract.mapper import map_monitorbestand
@@ -77,6 +77,31 @@ def build_api_input_command(
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         typer.echo(f"Wrote API input to {out}")
+
+    if debug_print:
+        typer.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+
+
+@app.command("build-apartment-api-input")
+def build_apartment_api_input_command(
+    xml: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
+    out: Path | None = typer.Option(None, file_okay=True, dir_okay=False),
+    xsd: Path | None = typer.Option(None, exists=True, file_okay=True, dir_okay=False),
+    debug_print: bool = typer.Option(False, "--debug-print", help="Print apartment API input payload to stdout"),
+) -> None:
+    config = ExtractConfig()
+
+    if xsd is not None and config.validate_xsd:
+        validate_xml_against_xsd(xml, xsd)
+
+    tree = parse_xml(xml)
+    fields = extract_required_fields(tree)
+    payload = build_apartment_api_input(fields)
+
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        typer.echo(f"Wrote apartment API input to {out}")
 
     if debug_print:
         typer.echo(json.dumps(payload, indent=2, ensure_ascii=False))
