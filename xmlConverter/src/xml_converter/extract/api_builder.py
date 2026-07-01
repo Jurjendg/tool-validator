@@ -1,4 +1,5 @@
 import warnings
+from typing import Any
 
 from xml_converter.extract.raw_fields import RawMonitorbestandFields
 
@@ -144,7 +145,14 @@ def _map_wall_insulation(fields: RawMonitorbestandFields) -> int:
     except ValueError as exc:
         raise ValueError(f"WallInsulation mapping failed: invalid 'RcGevels' value '{raw}'.") from exc
 
-    if rc_gevels < 0.86:
+    construction_year_category = _map_construction_year_category(fields)
+    level_2_threshold = 0.8
+    if construction_year_category == 1:
+        level_2_threshold = 1.0
+    elif construction_year_category == 2:
+        level_2_threshold = 0.9
+
+    if rc_gevels < level_2_threshold:
         return 1
     if rc_gevels < 1.9:
         return 2
@@ -362,12 +370,40 @@ def _normalize_value(value: str | None) -> str:
     return (value or "").strip()
 
 
+def _dict_text(value: object) -> str:
+    if isinstance(value, dict):
+        return str(value.get("_text") or "").strip()
+    return str(value or "").strip()
+
+
+def _opwekker_hoofdtype(opwekker: dict[str, Any]) -> str:
+    return _dict_text(opwekker.get("HoofdtypeVerwarmingstoestel"))
+
+
+def _opwekker_heat_pump_power(opwekker: dict[str, Any]) -> float | None:
+    for key in ("Opwekkingsvermogen", "VermogenOpwekker"):
+        power = _parse_float_or_none(_dict_text(opwekker.get(key)))
+        if power is not None:
+            return power
+    return None
+
+
+def _hybrid_heat_pump_power_at_most_3(fields: RawMonitorbestandFields) -> bool:
+    for opwekker in fields.opwekkers:
+        if _opwekker_hoofdtype(opwekker) != "ElektrischeWarmtepomp":
+            continue
+        power = _opwekker_heat_pump_power(opwekker)
+        if power is not None and power <= 3:
+            return True
+    return False
+
+
 def _collect_opwekker_types(fields: RawMonitorbestandFields) -> list[str]:
     result: list[str] = []
     for opwekker in fields.opwekkers:
-        hoofdtype = opwekker.get("HoofdtypeVerwarmingstoestel")
-        if isinstance(hoofdtype, str) and hoofdtype.strip():
-            result.append(hoofdtype.strip())
+        hoofdtype = _opwekker_hoofdtype(opwekker)
+        if hoofdtype:
+            result.append(hoofdtype)
     return result
 
 
@@ -388,14 +424,10 @@ def _map_installation(fields: RawMonitorbestandFields) -> int:
     opwekkertype_verwarming = _normalize_value(fields.opwekkertype_verwarming)
     opwekkertype_tapwater = _normalize_value(fields.opwekkertype_tapwater)
 
-    # Backward-compatible fallback for early tests where installation inputs were not specified.
     if not opwekkertype_verwarming and not opwekkertype_tapwater:
-        warnings.warn(
-            "Installation mapping warning: heating and hot water generator types missing; defaulting to 4.",
-            UserWarning,
-            stacklevel=2,
+        raise ValueError(
+            "Installation mapping failed: heating and hot water generator types missing."
         )
-        return 4
 
     external_heat_values = {"ExterneWarmte", "ExterneWarmtelevering"}
     is_external_heat = opwekkertype_verwarming in external_heat_values
@@ -454,16 +486,31 @@ def _map_installation(fields: RawMonitorbestandFields) -> int:
     combi_tapwater = {"Combitoestel", "CombiGK", "CombiGKCW", "CombiGKHRCW"}
     hr104_107 = {"HR104", "HR104Lucht", "HR107", "HR107Lucht"}
     conv_types = {"Conventioneel", "VR", "ConventioneelLucht", "VRLucht"}
+    heat_pump_tapwater = {"WarmtepompRetourlucht", "WarmtepompOverig"}
     heat_pump_hybrid_tapwater = {"Combitoestel", "CombiGKHRCW", "HR107"}
 
-    if len(opwekker_types) > 1 and _flag_to_bool(fields.hybride_warmtepomp_samenvatting):
-        opwekker_set = set(opwekker_types)
-        if (
-            "ElektrischeWarmtepomp" in opwekker_set
-            and len(opwekker_set.intersection(hr104_107)) > 0
-            and opwekkertype_tapwater in combi_tapwater
-        ):
+    opwekker_set = set(opwekker_types)
+    has_hybrid_heat_pump_generators = (
+        "ElektrischeWarmtepomp" in opwekker_set
+        and len(opwekker_set.intersection(hr104_107)) > 0
+    )
+    if has_hybrid_heat_pump_generators:
+        if opwekkertype_tapwater in combi_tapwater:
+            if _hybrid_heat_pump_power_at_most_3(fields):
+                warnings.warn(
+                    (
+                        "Installation mapping warning: hybrid heat pump Opwekkingsvermogen "
+                        "is set to <= 3; mapping as HR installation 4."
+                    ),
+                    UserWarning,
+                    stacklevel=2,
+                )
+                return 4
             return 8
+        if opwekkertype_tapwater in heat_pump_tapwater:
+            raise ValueError(
+                "Installation mapping failed: hybrid heat pump with heat-pump hot water is unsupported."
+            )
 
     zonneboiler_aanwezig = _flag_to_bool(fields.zonneboiler_aanwezig)
     if not zonneboiler_aanwezig:
@@ -483,10 +530,7 @@ def _map_installation(fields: RawMonitorbestandFields) -> int:
             return 4
         if opwekkertype_verwarming == "HR107" and opwekkertype_tapwater == "HR107":
             return 4
-        if opwekkertype_verwarming == "ElektrischeWarmtepomp" and opwekkertype_tapwater in {
-            "WarmtepompRetourlucht",
-            "WarmtepompOverig",
-        }:
+        if opwekkertype_verwarming == "ElektrischeWarmtepomp" and opwekkertype_tapwater in heat_pump_tapwater:
             return 6
         if opwekkertype_verwarming == "ElektrischeWarmtepomp" and opwekkertype_tapwater in heat_pump_hybrid_tapwater:
             return 8

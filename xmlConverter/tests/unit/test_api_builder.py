@@ -5,9 +5,6 @@ from xml_converter.extract.raw_fields import RawMonitorbestandFields
 
 pytestmark = [
     pytest.mark.filterwarnings(
-        "ignore:Installation mapping warning.*defaulting to 4\\.:UserWarning"
-    ),
-    pytest.mark.filterwarnings(
         "ignore:ShowerHeatRecovery mapping warning.*defaulting to 1\\.:UserWarning"
     ),
     pytest.mark.filterwarnings(
@@ -295,28 +292,36 @@ def test_build_api_input_raises_when_weighted_roof_values_are_zero() -> None:
 
 
 @pytest.mark.parametrize(
-    ("rc_gevels", "expected_wall_insulation"),
+    ("construction_year", "rc_gevels", "expected_wall_insulation"),
     [
-        ("0.85", 1),
-        ("0.86", 2),
-        ("1.89", 2),
-        ("1.90", 3),
-        ("3.39", 3),
-        ("3.40", 4),
+        ("1924", "0.99", 1),
+        ("1924", "1.00", 2),
+        ("1945", "0.89", 1),
+        ("1945", "0.90", 2),
+        ("1974", "0.79", 1),
+        ("1974", "0.80", 2),
+        ("1974", "1.89", 2),
+        ("1974", "1.90", 3),
+        ("1974", "3.39", 3),
+        ("1974", "3.40", 4),
     ],
 )
 def test_build_api_input_maps_wall_insulation(
-    rc_gevels: str, expected_wall_insulation: int
+    construction_year: str, rc_gevels: str, expected_wall_insulation: int
 ) -> None:
     fields = RawMonitorbestandFields(
         gebruiksoppervlakte="50.0",
-        construction_year="1974",
+        construction_year=construction_year,
         building_category="12",
         dak_constructiedelen=ROOF_ITEMS_DEFAULT,
         rc_gevels=rc_gevels,
         rc_vloeren=DEFAULT_RC_VLOEREN,
         ventilatie_systemen=VENTILATIE_ITEMS_DEFAULT,
         raam_constructiedelen=RAAM_ITEMS_DEFAULT,
+        opwekkertype_verwarming="HR107",
+        opwekkertype_tapwater="CombiGKHRCW",
+        douche_wtw_aanwezig="0",
+        koeling_aanwezig="0",
     )
 
     payload = build_api_input(fields)
@@ -543,6 +548,24 @@ def test_build_api_input_maps_installation_to_4_for_hr107_combi_example() -> Non
     assert payload["ShowerHeatRecovery"] == 1
 
 
+def test_build_api_input_raises_when_installation_sources_missing() -> None:
+    fields = RawMonitorbestandFields(
+        gebruiksoppervlakte="50.0",
+        construction_year="1974",
+        building_category="12",
+        dak_constructiedelen=ROOF_ITEMS_DEFAULT,
+        rc_gevels="1.80",
+        rc_vloeren="1.00",
+        ventilatie_systemen=VENTILATIE_ITEMS_DEFAULT,
+        raam_constructiedelen=RAAM_ITEMS_DEFAULT,
+        douche_wtw_aanwezig="0",
+        koeling_aanwezig="0",
+    )
+
+    with pytest.raises(ValueError, match="Installation mapping failed"):
+        build_api_input(fields)
+
+
 @pytest.mark.parametrize(
     ("opwekkertype_verwarming", "opwekkertype_tapwater", "expected_installation"),
     [
@@ -670,6 +693,130 @@ def test_build_api_input_maps_installation_to_8_for_hybrid_multi_generator_case(
     payload = build_api_input(fields)
 
     assert payload["Installation"] == 8
+
+
+def test_build_api_input_maps_hybrid_heat_pump_to_4_when_power_at_most_3() -> None:
+    fields = RawMonitorbestandFields(
+        gebruiksoppervlakte="50.0",
+        construction_year="1974",
+        building_category="12",
+        dak_constructiedelen=ROOF_ITEMS_DEFAULT,
+        rc_gevels="1.80",
+        rc_vloeren="1.00",
+        ventilatie_systemen=VENTILATIE_ITEMS_DEFAULT,
+        raam_constructiedelen=RAAM_ITEMS_DEFAULT,
+        opwekkertype_verwarming="HR107",
+        opwekkertype_tapwater="CombiGKHRCW",
+        zonneboiler_aanwezig="0",
+        hybride_warmtepomp_samenvatting="1",
+        douche_wtw_aanwezig="0",
+        opwekkers=[
+            {
+                "HoofdtypeVerwarmingstoestel": "ElektrischeWarmtepomp",
+                "Opwekkingsvermogen": "3.0",
+            },
+            {"HoofdtypeVerwarmingstoestel": "HR107"},
+        ],
+        tapwater_systemen=[{"collectief": "false", "toestel": "CombiGKHRCW", "toestellen": ["CombiGKHRCW"]}],
+    )
+
+    with pytest.warns(UserWarning, match="Opwekkingsvermogen"):
+        payload = build_api_input(fields)
+
+    assert payload["Installation"] == 4
+
+
+def test_build_api_input_maps_hybrid_heat_pump_to_8_when_power_above_3() -> None:
+    fields = RawMonitorbestandFields(
+        gebruiksoppervlakte="50.0",
+        construction_year="1974",
+        building_category="12",
+        dak_constructiedelen=ROOF_ITEMS_DEFAULT,
+        rc_gevels="1.80",
+        rc_vloeren="1.00",
+        ventilatie_systemen=VENTILATIE_ITEMS_DEFAULT,
+        raam_constructiedelen=RAAM_ITEMS_DEFAULT,
+        opwekkertype_verwarming="HR107",
+        opwekkertype_tapwater="CombiGKHRCW",
+        zonneboiler_aanwezig="0",
+        hybride_warmtepomp_samenvatting="1",
+        douche_wtw_aanwezig="0",
+        opwekkers=[
+            {
+                "HoofdtypeVerwarmingstoestel": "ElektrischeWarmtepomp",
+                "Opwekkingsvermogen": "3.1",
+            },
+            {"HoofdtypeVerwarmingstoestel": "HR107"},
+        ],
+        tapwater_systemen=[{"collectief": "false", "toestel": "CombiGKHRCW", "toestellen": ["CombiGKHRCW"]}],
+    )
+
+    payload = build_api_input(fields)
+
+    assert payload["Installation"] == 8
+
+
+def test_build_api_input_uses_vermogen_opwekker_for_hybrid_heat_pump_power() -> None:
+    fields = RawMonitorbestandFields(
+        gebruiksoppervlakte="50.0",
+        construction_year="1974",
+        building_category="12",
+        dak_constructiedelen=ROOF_ITEMS_DEFAULT,
+        rc_gevels="1.80",
+        rc_vloeren="1.00",
+        ventilatie_systemen=VENTILATIE_ITEMS_DEFAULT,
+        raam_constructiedelen=RAAM_ITEMS_DEFAULT,
+        opwekkertype_verwarming="HR107",
+        opwekkertype_tapwater="CombiGKHRCW",
+        zonneboiler_aanwezig="0",
+        hybride_warmtepomp_samenvatting="1",
+        douche_wtw_aanwezig="0",
+        opwekkers=[
+            {
+                "HoofdtypeVerwarmingstoestel": "ElektrischeWarmtepomp",
+                "VermogenOpwekker": "1.5",
+            },
+            {"HoofdtypeVerwarmingstoestel": "HR107"},
+        ],
+        tapwater_systemen=[{"collectief": "false", "toestel": "CombiGKHRCW", "toestellen": ["CombiGKHRCW"]}],
+    )
+
+    with pytest.warns(UserWarning, match="Opwekkingsvermogen"):
+        payload = build_api_input(fields)
+
+    assert payload["Installation"] == 4
+
+
+def test_build_api_input_raises_for_hybrid_heat_pump_with_heat_pump_hotwater() -> None:
+    fields = RawMonitorbestandFields(
+        gebruiksoppervlakte="50.0",
+        construction_year="1974",
+        building_category="12",
+        dak_constructiedelen=ROOF_ITEMS_DEFAULT,
+        rc_gevels="1.80",
+        rc_vloeren="1.00",
+        ventilatie_systemen=VENTILATIE_ITEMS_DEFAULT,
+        raam_constructiedelen=RAAM_ITEMS_DEFAULT,
+        opwekkertype_verwarming="ElektrischeWarmtepomp",
+        opwekkertype_tapwater="WarmtepompRetourlucht",
+        zonneboiler_aanwezig="0",
+        hybride_warmtepomp_samenvatting="1",
+        douche_wtw_aanwezig="0",
+        opwekkers=[
+            {"HoofdtypeVerwarmingstoestel": "ElektrischeWarmtepomp"},
+            {"HoofdtypeVerwarmingstoestel": "HR107"},
+        ],
+        tapwater_systemen=[
+            {
+                "collectief": "false",
+                "toestel": "WarmtepompRetourlucht",
+                "toestellen": ["WarmtepompRetourlucht"],
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="hybrid heat pump"):
+        build_api_input(fields)
 
 
 def test_build_api_input_maps_shower_heat_recovery_from_zero_to_1() -> None:
